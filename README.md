@@ -1,6 +1,6 @@
 # cpmcmc
 
-Repository with the code used for the paper "Unbiased approximation of posteriors via coupled particle Markov chain Monte Carlo" by Willem van den Boom, Ajay Jasra, Maria De Iorio, Alexandros Beskos and Johan G. Eriksson (to be posted on arXiv soon).
+Repository with the code used for the paper "Unbiased approximation of posteriors via coupled particle Markov chain Monte Carlo" by Willem van den Boom, Ajay Jasra, Maria De Iorio, Alexandros Beskos and Johan G. Eriksson ([arXiv:2103.05176](https://arxiv.org/abs/2103.05176)).
 
 
 ## Description of files
