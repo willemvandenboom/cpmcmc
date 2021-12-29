@@ -232,14 +232,8 @@ def G_equal(z):
 
     if G_both[0].ecount() != G_both[1].ecount():
         return False
-    
-    es_both = [G_both[j].es for j in range(2)]
-    
-    for i in range(G_both[0].ecount()):
-        if es_both[0][i] != es_both[1][i]:
-            return False
-    
-    return True
+
+    return sorted(G_both[0].get_edgelist()) == sorted(G_both[1].get_edgelist())
 
 
 def equal(z):
