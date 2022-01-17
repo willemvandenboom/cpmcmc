@@ -1,151 +1,41 @@
-import cppyy
 import matplotlib.pyplot as plt
 import numpy as np
+import rpy2.robjects as robjects
 
 import cpmcmc
 
-rng = np.random.default_rng(seed=0)
+robjects.r["load"]("HMC_comparison.RData")
+result_r = robjects.r["results"]
 
-# Simulation as per Section B.2 of Middleton et al. (2019).
-x_star = np.array([-3.0, 0.0])
-D = len(x_star)
-M = 100
-sigma = 1.0
+S = len(result_r)
+max_iter = len(result_r[0][1])
+min_iter = max_iter
+result_list_tmp = S * [None]
+print("Putting the R list in the Python format needed...")
 
-"""
-The cluster allocation in the next line is not drawn randomly according to the
-model but instead follows what was done in Middleton et al. (2019) per
-https://github.com/particlemontecarlo/unbiased_pimh/blob/f89d7b0210ad5ae98d21c4c6cffad4df22b4e1e1/R/model_get_smc.R
-"""
-y = rng.normal(loc=x_star[np.arange(M) % D], scale=sigma)
-
-# Save data for use with R for the comparison with the coupled HMC from
-# Heng & Jacob (2019, doi:10.1093/biomet/asy074).
-np.savetxt(fname="y.txt", X=y)
-
-
-N = 25 # Number of SMC particles
-min_iter = 10**4  # Total of coupled and marginal iterations is at least this.
-max_iter = min_iter # Maximum number of iterations before giving up on coupling
-
-if sigma != 1.0:
-    raise NotImplementedError("The following C++ code assumes sigma = 1.0.")
-
-
-cppyy.cppdef("""
-void log_likelihood_cpp(double* vec_out, double* x, double* y, int N) {
-    /*
-    Log-likelihood with constants dropped
+for s in range(S):
+    print("Finished " + str(s) + " out of " + str(S), end="\r")
+    tmp = result_r[s][0][0]
+    meeting_time = int(tmp) if tmp != np.inf else max_iter - 1
+    h_coupled = np.full((max_iter, 2), np.nan)
     
-    This function vectorizes over the number of particles `N`.
-    That is, it assumes that `x` is a `N` by `D` matrix and outputs
-    to the `N`-dimensional vector `vec_out`.
-    */
-    int ind = 0;
+    for i in range(max_iter):
+        for j in range(2):
+            try:
+                h_coupled[i, j] = result_r[s][1][i][j][0]
+            except:
+                pass
     
-    for (int i = 0; i < N; i++) {
-        double term1 = 0.0;
-        double term2 = 0.0;
-        
-        for (int j = 0; j < """ + str(D) + """; j++) {
-            double x_ij = x[ind++];
-            term2 += x_ij * x_ij;
-            
-            for (int m = 0; m < """ + str(M) + """; m++) {
-                term1 += x_ij * y[m];
-            }
-        }
-        
-        vec_out[i] = term1 - 0.5*""" + str(M) + """*term2;
+    meet_time = result_r[s][4][0]
+    additional_time = result_r[s][5][0]
+    
+    result_list_tmp[s] = {
+        "meeting time": meeting_time,
+        "h coupled": np.array(h_coupled, dtype=float),
+        "meet time": meet_time,
+        "additional time": additional_time
     }
-}
-""")
 
-
-# Reduce Python overhead:
-log_likelihood_cpp = cppyy.gbl.log_likelihood_cpp
-
-
-def log_likelihood(x_i):
-    """
-    Log-likelihood with constants dropped
-    """
-    N = len(x_i)
-    x_arr = np.stack(x_i) if x_i.ndim == 1 else x_i
-    x_arr = np.ascontiguousarray(x_arr)
-    ret = np.empty(N)
-    log_likelihood_cpp(ret, x_arr, y, N)
-    return ret
-
-
-def h(x_i):
-    """Same statistic as in Section B.2 of Middleton et al. (2019)"""
-    x_arr = np.stack(x_i)
-    return x_arr[:, 0] + x_arr[:, 1] + x_arr[:, 0]**2 + x_arr[:, 1]**2
-
-
-def MCMC_update(x_i, rng, α=1.0):
-    """
-    MCMC update for each `x` in the 1D NumPy array `x_i`
-    
-    Metropolis-Hastings algorithm with as proposal a Gaussian centered at `x`
-    with identity covariance. Thus, the proposal is a symmetric random walk.
-    """
-    N = len(x_i)
-    x_arr = np.stack(x_i)
-    x_prop = x_arr + rng.normal(size=(N, D))
-    
-    accept_mask = (
-        np.log(rng.random(size=N)) < α * \
-            (log_likelihood(x_prop) - log_likelihood(x_arr))
-    ) & (x_prop.min(axis=-1) > -10.0) & (x_prop.max(axis=-1) < 10.0)
-    
-    for i in accept_mask.nonzero()[0]:
-        x_i[i] = x_prop[i, :]
-    
-    return x_i
-
-
-def sample_from_prior(rng):
-    return rng.uniform(low=-10.0, high=10.0, size=D)
-
-
-def equal(z):
-    return np.allclose(np.stack(z[0, :]), np.stack(z[1, :]))
-
-
-def coupled_MCMC_update(z_i, rng, α=1.0):
-    # Common seed MCMC update
-    tmp_seed = cpmcmc.random_seed(rng)
-    
-    for j in range(2):
-        z_i[:, j] = MCMC_update(
-            x_i=z_i[:, j], rng=np.random.default_rng(tmp_seed), α=α
-        )
-    
-    return z_i
-
-
-def test_func(x_i):
-    return np.linalg.norm(np.stack(x_i), axis=1)
-
-
-setup = cpmcmc.adapt_SMC(
-    10**4, sample_from_prior, log_likelihood, MCMC_update, test_func, rng=rng
-)
-
-S = 1024
-
-result_list = [cpmcmc.repeat_cMCMC(
-    S, min_iter, max_iter, equal, N, sample_from_prior, log_likelihood,
-    MCMC_update, setup, coupled_MCMC_update, h, rng=rng, PIMH_prob=prob
-) for prob in [0.0, 0.5, 1.0]]
-
-n_bootstrap = 10**3
-alpha_level = 0.3
-col = "black"
-n_setup = len(result_list)
-h_est_all = n_setup * [None]
 
 
 def plot_result(
@@ -241,6 +131,27 @@ def plot_result(
     return h_est_list
 
 
+rng = np.random.default_rng(seed=0)
+
+comp_time  = np.array([[
+    result_list_tmp[s][key] for key in ["meet time", "additional time"]
+] for s in range(S)])
+
+tau_arr = np.array([result_list_tmp[s]["meeting time"] for s in range(S)])
+rep_h_coupled = [result_list_tmp[s]["h coupled"] for s in range(S)]
+
+result = {"meeting time": tau_arr, "h": rep_h_coupled, "time": comp_time}
+
+
+result_list = [result]
+
+n_bootstrap = 10**3
+alpha_level = 0.3
+col = "black"
+n_setup = len(result_list)
+h_est_all = n_setup * [None]
+
+
 fig, axs = plt.subplots(
     3, n_setup, figsize=(8, 8), sharex="row", sharey="row",
     gridspec_kw={'hspace': 0, 'wspace': 0}
@@ -299,12 +210,4 @@ axs[2, 0].set_ylabel(
     r"$\hat{\mathrm{var}}(\bar{h}_k^l) \times$ time (seconds)"
 )
 
-for ind, ax in enumerate(axs[0, :]):
-    ax.set_title([
-        "Conditional SMC",
-        "Mixed",
-        "PIMH",
-    ][ind])
-
-axs[2, 0].set_ylim((7.0 * 10**-4, 3.0 * 10**-2))
-fig.savefig("mix_of_Gaussians.pdf")
+fig.savefig("HMC_comparison.pdf")
